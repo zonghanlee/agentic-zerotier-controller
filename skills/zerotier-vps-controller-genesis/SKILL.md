@@ -193,7 +193,7 @@ Order matters — ufw evaluates rules top-to-bottom, so the interface-specific `
 - **Port 4444 TCP**: Must NEVER be published to `0.0.0.0` on the public interface firewall.
 - **`wget` is not in the `zerotier/zerotier` image** — use `curl` for all local REST API calls.
 - **A controller is not automatically a member of its own network** — `zerotier-cli listnetworks` on the controller shows nothing until it explicitly joins; verify network creation via the controller API instead.
-- **Future hardening** — Enabling `ufw` with explicit allow rules (SSH, `9993/udp`, default-deny) is a good future hardening step if the VPS ever gets a directly routable public IP. The interface-scoped allow for 4444 ensures ZeroUI is reachable only over the ZeroTier mesh, never the public interface.
+- **`ufw` inactive does not mean port 4444 is publicly reachable** — a public curl timeout can just as easily come from NAT/no port-forwarding on the network path, not host firewall enforcement. Don't conflate the two. Enabling `ufw` with explicit allow rules (SSH, `9993/udp`, default-deny) is a good future hardening step if the VPS ever gets a directly routable public IP — not required for the zero-exposure guarantee to hold today, but not equivalent to it either.
 
 ## Relations
 - guide: [[../../assets/zerotier-genesis-sovereign-mesh-guide.md]]
