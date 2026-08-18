@@ -100,10 +100,10 @@ services:
 
 ## 4. Bonus Skill File (`zerotier-vps-controller-genesis`)
 
-To automate this workflow, use the companion skill file located at [`skills/zerotier-vps-controller-genesis/SKILL.md`](file:///root/Alfred/skills/zerotier-vps-controller-genesis/SKILL.md).
+To automate this workflow, use the companion skill file located at [`skills/zerotier-vps-controller-genesis/SKILL.md`](../../skills/zerotier-vps-controller-genesis/SKILL.md).
 
 ---
 
 ## Relations
-- skill: [[../skills/zerotier-vps-controller-genesis/SKILL.md]]
-- knowledge: [[../knowledge/zerotier-contabo1.md]]
+- skill: [[../../skills/zerotier-vps-controller-genesis/SKILL.md]]
+- knowledge: [[../../knowledge/zerotier-controller-genesis.md]]

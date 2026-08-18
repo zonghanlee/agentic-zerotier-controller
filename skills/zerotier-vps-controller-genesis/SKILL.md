@@ -1,7 +1,7 @@
 ---
 name: zerotier-vps-controller-genesis
 description: Bootstrap a 100% self-hosted ZeroTier controller + ZeroUI (dec0dos/zero-ui) from scratch on a raw Linux VPS with ZERO public web UI exposure throughout the entire lifecycle.
-version: 1.2.0
+version: 1.4.0
 platforms: [linux]
 metadata:
   hermes:
@@ -109,7 +109,11 @@ docker exec zerotier-controller curl -s -X POST \
 
 ### Step 4: Deploy ZeroUI Management Interface (`dec0dos/zero-ui:latest`)
 
-Deploy **ZeroUI** (`dec0dos/zero-ui:latest`) using `network_mode: "host"`. ZeroUI connects directly to `http://127.0.0.1:9993`, mounts `/var/lib/zerotier-one` read-only, and listens on port 4444:
+Deploy **ZeroUI** (`dec0dos/zero-ui:latest`) using `network_mode: "host"`. ZeroUI connects directly to `http://127.0.0.1:9993`, mounts the controller's data directory read-only, and listens on port 4444:
+
+**Mount the controller's *actual* data path** — i.e. whatever `./data` maps to in Step 2's compose file (usually `~/zerotier-genesis/data`), NOT the generic `/var/lib/zerotier-one` host path. That system path may not exist on the host at all if the controller uses a local bind mount instead — mounting the wrong path makes ZeroUI crash-loop on a missing `authtoken.secret`.
+
+**Use `ZU_CONTROLLER_ENDPOINT`, not `ZT_ADDR`** — `ZT_ADDR` is not read by this image. Set the endpoint explicitly to `http://127.0.0.1:9993/` (not `localhost`) — under Node 18, `localhost` resolves to `::1` first, and the controller isn't listening on the IPv6 loopback, so the connection fails silently with only a generic "Couldn't connect to the controller" log line.
 
 ```bash
 cat << 'EOF' > docker-compose.zeroui.yml
@@ -119,10 +123,10 @@ services:
     container_name: zeroui
     network_mode: "host"
     volumes:
-      - /var/lib/zerotier-one:/var/lib/zerotier-one:ro
+      - ./data:/var/lib/zerotier-one:ro
       - zeroui-data:/app/backend/data
     environment:
-      - ZT_ADDR=127.0.0.1:9993
+      - ZU_CONTROLLER_ENDPOINT=http://127.0.0.1:9993/
       - ZU_DEFAULT_USERNAME=admin
       - ZU_DEFAULT_PASSWORD=YourSecurePassword123!
       - ZU_SECURE_HEADERS=false
@@ -136,7 +140,35 @@ EOF
 docker compose -f docker-compose.zeroui.yml up -d
 ```
 
+**Compose project-name footgun**: if the controller (Step 2) and ZeroUI (Step 4) are defined in separate compose files in the same directory, they share the same default Compose project name (the directory name) — Compose treats them as one project. Running `docker compose -f docker-compose.zeroui.yml down` will also stop and remove `zerotier-controller`. Prefer `stop`/`rm` scoped to a single service (never bare `down`) when only one service needs to be touched, or give each file a distinct `-p`/`COMPOSE_PROJECT_NAME`.
+
 *ZeroUI is now accessible over your ZeroTier mesh at `http://10.246.231.x:4444`.*
+
+### Step 5: Join the controller to its own network (required for a reachable ZT mesh IP)
+Creating the network via the REST API does **not** make the controller a member of it — its own `zerotier-cli listnetworks` will stay empty and, since ZeroUI runs in `network_mode: "host"`, ZeroUI has no ZT mesh IP to be reached at until this step runs:
+
+```bash
+docker exec zerotier-controller zerotier-cli join <NWID>
+TOKEN=$(docker exec zerotier-controller cat /var/lib/zerotier-one/authtoken.secret)
+docker exec zerotier-controller curl -s -X POST \
+  -d '{"authorized":true,"ipAssignments":["10.246.231.1"]}' \
+  -H "X-ZT1-Auth: $TOKEN" \
+  "http://localhost:9993/controller/network/<NWID>/member/<CONTROLLER_NODE_ID>"
+docker exec zerotier-controller zerotier-cli listnetworks   # should now show OK with a 10.246.231.x IP
+```
+
+### Step 6 (optional but recommended): Interface-scoped `ufw` hardening
+Enforces the zero-exposure guarantee at the host firewall itself, rather than relying on network topology (NAT/no port-forward) to keep port 4444 unreachable. Find the ZT interface name via `zerotier-cli listnetworks` (the `<dev>` column), then:
+
+```bash
+sudo ufw allow 22/tcp                                     # SSH stays open everywhere — don't lock yourself out
+sudo ufw allow 9993/udp                                   # ZeroTier's own P2P port, keep open everywhere
+sudo ufw allow in on <zt-iface> to any port 4444           # 4444 allowed ONLY via the ZeroTier interface
+sudo ufw deny 4444                                         # 4444 blocked everywhere else (LAN + internet)
+sudo ufw enable                                            # rules above must exist first, or you may lock yourself out
+```
+
+Order matters — ufw evaluates rules top-to-bottom, so the interface-specific `allow` must precede the general `deny`. A single SSH attempt timing out right after `enable` is often just an IPv6-then-IPv4 client fallback delay, not a lockout — retry with `ssh -4` before assuming the worst; an already-open SSH session survives `enable` regardless.
 
 ---
 
@@ -161,6 +193,7 @@ docker compose -f docker-compose.zeroui.yml up -d
 - **Port 4444 TCP**: Must NEVER be published to `0.0.0.0` on the public interface firewall.
 - **`wget` is not in the `zerotier/zerotier` image** — use `curl` for all local REST API calls.
 - **A controller is not automatically a member of its own network** — `zerotier-cli listnetworks` on the controller shows nothing until it explicitly joins; verify network creation via the controller API instead.
+- **Future hardening** — Enabling `ufw` with explicit allow rules (SSH, `9993/udp`, default-deny) is a good future hardening step if the VPS ever gets a directly routable public IP. The interface-scoped allow for 4444 ensures ZeroUI is reachable only over the ZeroTier mesh, never the public interface.
 
 ## Relations
 - guide: [[../../assets/zerotier-genesis-sovereign-mesh-guide.md]]
@@ -168,6 +201,13 @@ docker compose -f docker-compose.zeroui.yml up -d
 - knowledge: [[../../knowledge/jym-sg-articles.md]]
 
 ## Changelog
+### 2026-08-18 (2)
+- Added Step 5 (join controller to its own network — required for ZeroUI to have any reachable ZT mesh IP at all, previously undocumented) and Step 6 (optional interface-scoped `ufw` hardening) after a live end-to-end operator-node authorization + firewall lockdown run.
+
+### 2026-08-18
+- Fixed live deployment bugs found on a real VPS run: ZeroUI data-volume mount now points at the controller's actual `./data` path (not the generic `/var/lib/zerotier-one` host path, which may not exist); replaced non-functional `ZT_ADDR` with `ZU_CONTROLLER_ENDPOINT=http://127.0.0.1:9993/` to dodge a Node 18 `localhost`→`::1` resolution failure; documented the shared-project-name footgun where `docker compose down` on one compose file also tears down the other service's container.
+- Added a gotcha noting `ufw` inactive ≠ port publicly reachable — don't conflate NAT/no-port-forward with host firewall enforcement.
+
 ### 2026-08-17
 - Standardized on **ZeroUI** (`dec0dos/zero-ui:latest`) across all documentation and deployment recipes.
 - Cleaned all legacy ZTNET references.
